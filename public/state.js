@@ -41,7 +41,7 @@ export function queryParams(intent, {pagination = true} = {}) {
 const operation = token => ({token, pending: false, error: null});
 const emptyDetail = token => ({...operation(token), id: null, data: null});
 export function createState() {
-  return {intent: normalizeIntent(), result: null, resultOp: operation(0), detail: emptyDetail(0), exportOp: operation(0)};
+  return {intent: normalizeIntent(), overview: null, overviewOp: operation(0), result: null, resultOp: operation(0), detail: emptyDetail(0), exportOp: operation(0)};
 }
 export function isResultCurrent(state) {
   return !!state.result && JSON.stringify(state.intent) === JSON.stringify(state.result.intent);
@@ -49,9 +49,16 @@ export function isResultCurrent(state) {
 export function canPaginate(state) {
   return !state.resultOp.pending && isResultCurrent(state) && state.result.data.totalPages > 0;
 }
+export function overviewKey(intent) {
+  const {q, service, status, severity, from, to} = normalizeIntent(intent);
+  return JSON.stringify({q, service, status, severity, from, to});
+}
+export function isOverviewCurrent(state) {
+  return !!state.overview && state.overview.key === overviewKey(state.intent);
+}
 function changeIntent(state, intent, force = true) {
   if (!force && JSON.stringify(intent) === JSON.stringify(state.intent)) return state;
-  return {...state, intent, resultOp: operation(state.resultOp.token + 1), detail: emptyDetail(state.detail.token + 1), exportOp: operation(state.exportOp.token + 1)};
+  return {...state, intent, overviewOp: overviewKey(intent) === overviewKey(state.intent) ? state.overviewOp : operation(state.overviewOp.token + 1), resultOp: operation(state.resultOp.token + 1), detail: emptyDetail(state.detail.token + 1), exportOp: operation(state.exportOp.token + 1)};
 }
 export function transition(state, event) {
   switch (event.type) {
@@ -63,6 +70,15 @@ export function transition(state, event) {
       const page = Math.max(1, Math.min(state.result.data.totalPages, state.intent.page + event.delta));
       return page === state.intent.page ? state : changeIntent(state, {...state.intent, page});
     }
+    case 'overview:start': return {...state, overviewOp: {...operation(state.overviewOp.token + 1), pending: true}};
+    case 'overview:success':
+    case 'overview:failure':
+      if (event.token !== state.overviewOp.token || !state.overviewOp.pending) return state;
+      return {...state, overview: event.type === 'overview:success' ? {key: overviewKey(state.intent), intent: state.intent, data: event.data} : state.overview,
+        overviewOp: {...operation(event.token), error: event.type === 'overview:failure' ? event.error : null}};
+    case 'overview:finish':
+      if (event.token !== state.overviewOp.token) return state;
+      return {...state, overviewOp: {...state.overviewOp, pending: false}};
     case 'result:start': return {...state, resultOp: {...operation(state.resultOp.token + 1), pending: true}};
     case 'result:success': {
       if (event.token !== state.resultOp.token || !state.resultOp.pending) return state;

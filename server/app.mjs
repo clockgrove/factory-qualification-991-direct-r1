@@ -90,6 +90,32 @@ function summary(rows) {
   };
 }
 
+function operationalOverview(rows) {
+  const services = new Map();
+  for (const row of rows) {
+    let service = services.get(row.service);
+    if (!service) {
+      service = { service: row.service, incidentCount: 0, unresolvedCount: 0, highSeverityCount: 0, resolutionHours: 0, resolvedCount: 0 };
+      services.set(row.service, service);
+    }
+    service.incidentCount++;
+    if (row.status !== 'resolved') service.unresolvedCount++;
+    if (['critical', 'high'].includes(row.severity)) service.highSeverityCount++;
+    if (row.status === 'resolved') {
+      service.resolvedCount++;
+      service.resolutionHours += (Date.parse(row.resolvedAt) - Date.parse(row.openedAt)) / 3_600_000;
+    }
+  }
+  return {
+    total: rows.length,
+    services: [...services.values()]
+      .sort((a, b) => b.unresolvedCount - a.unresolvedCount || compare(a.service, b.service))
+      .map(({ resolutionHours, resolvedCount, ...service }) => ({
+        ...service, averageResolutionHours: resolvedCount ? resolutionHours / resolvedCount : null,
+      })),
+  };
+}
+
 function csvCell(value) {
   const text = value === null ? '' : Array.isArray(value) ? JSON.stringify(value) : String(value);
   return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
@@ -125,10 +151,11 @@ export async function createAppServer() {
         return json(response, 405, { error: { code: 'METHOD_NOT_ALLOWED', message: 'Use GET for this read-only server' } });
       }
       const url = new URL(request.url, 'http://127.0.0.1');
-      if (url.pathname === '/api/incidents' || url.pathname === '/api/export.csv') {
+      if (url.pathname === '/api/incidents' || url.pathname === '/api/export.csv' || url.pathname === '/api/overview') {
         const exporting = url.pathname === '/api/export.csv';
         const query = parseQuery(url.searchParams, exporting);
         const matches = matching(rows, query);
+        if (url.pathname === '/api/overview') return json(response, 200, operationalOverview(matches));
         if (exporting) {
           response.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': 'attachment; filename="incidents.csv"', 'Cache-Control': 'no-store' });
           return response.end([fields.join(','), ...matches.map(row => fields.map(key => csvCell(row[key])).join(','))].join('\r\n') + '\r\n');

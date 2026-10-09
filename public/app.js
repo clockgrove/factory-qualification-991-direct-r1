@@ -1,4 +1,5 @@
-import {createState, transition, queryParams, savedView, announcement, isResultCurrent, canPaginate, addressIntent} from './state.js';
+import {triageKey, parseTriage, addTriage, editNote, removeTriage} from './triage.js';
+import {createState, transition, queryParams, savedView, announcement, isResultCurrent, canPaginate, addressIntent, overviewKey, isOverviewCurrent} from './state.js';
 
 const $ = id => document.getElementById(id);
 const node = (tag, text, className) => { const element = document.createElement(tag); if (text !== undefined) element.textContent = text; if (className) element.className = className; return element; };
@@ -10,7 +11,13 @@ function writeAddress(method) {
   history[method](null, '', `${location.pathname}?${queryParams(state.intent)}${location.hash}`);
 }
 writeAddress('replaceState');
-let resultController, detailController, exportController;
+let resultController, detailController, exportController, overviewController;
+let triage = [];
+try {
+  const raw = localStorage.getItem(triageKey);
+  try { triage = parseTriage(raw); }
+  catch { $('triage-storage').textContent = 'Saved triage is malformed and could not be restored. Your triage is usable for this visit; add incidents to start a new saved list.'; }
+} catch { $('triage-storage').textContent = 'Triage could not be read because of unavailable browser storage. Your triage is usable for this visit; earlier saved entries could not be restored.'; }
 let returnIncident = null, returnElement = null;
 let renderedResult, renderedBlocked, renderedDetail, renderedIntent;
 const storageKey = 'incident-explorer.views.v1';
@@ -35,10 +42,12 @@ function change(event) {
   if (next === state) return;
   $('to').setCustomValidity('');
   resultController?.abort(); detailController?.abort(); exportController?.abort();
+  const overviewChanged = overviewKey(next.intent) !== overviewKey(state.intent);
+  if (overviewChanged) overviewController?.abort();
   state = next;
   if (event.type === 'address') { $('search').value = state.intent.q; renderedIntent = undefined; writeAddress('replaceState'); }
   else writeAddress('pushState');
-  render(); loadResults();
+  render(); loadResults(); if (overviewChanged) loadOverview();
 }
 async function checked(response) {
   if (response.ok) return response;
@@ -60,6 +69,17 @@ async function loadResults() {
     if (ownsResult) writeAddress('replaceState');
   } catch (error) { if (error.name !== 'AbortError') dispatch({type: 'result:failure', token, error: errorText(error)}); }
   finally { dispatch({type: 'result:finish', token}); }
+}
+async function loadOverview() {
+  overviewController?.abort();
+  const controller = overviewController = new AbortController();
+  dispatch({type: 'overview:start'});
+  const token = state.overviewOp.token, params = queryParams(state.intent, {pagination: false});
+  try {
+    const response = await checked(await fetch(`/api/overview?${params}`, {signal: controller.signal}));
+    dispatch({type: 'overview:success', token, data: await response.json()});
+  } catch (error) { if (error.name !== 'AbortError') dispatch({type: 'overview:failure', token, error: errorText(error)}); }
+  finally { dispatch({type: 'overview:finish', token}); }
 }
 async function loadDetail() {
   detailController?.abort();
@@ -170,15 +190,66 @@ function renderDetail() {
       fields.append(node('dt', label), node('dd', key.endsWith('At') ? utc(value) : Array.isArray(value) ? value.join(', ') || 'None' : key === 'status' ? human(value) : String(value ?? '—')));
     }
     $('detail-content').append(fields);
+    const add = node('button', triage.some(x => x.id === detail.id) ? 'In personal triage' : 'Add to personal triage');
+    add.type = 'button';
+    add.addEventListener('click', () => {
+      triage = addTriage(triage, detail.data); persistTriage(); renderTriage();
+      add.textContent = 'In personal triage';
+    });
+    $('detail-content').append(add);
   }
   if (!dialog.open) { dialog.showModal(); $('close-detail').focus(); }
   else if (contentHadFocus) $('close-detail').focus();
 }
 function render() {
-  renderControls(); renderSnapshot(); renderDetail();
+  renderControls(); renderOverview(); renderSnapshot(); renderDetail();
   $('export').disabled = state.exportOp.pending;
   operationMessage($('export-message'), state.exportOp.error || (state.exportOp.pending ? 'Preparing a CSV of all matching incidents…' : ''), state.exportOp.error ? exportCSV : null, !!state.exportOp.error);
   $('announcement').textContent = announcement(state);
+}
+function selectionText(intent) {
+  const parts = [];
+  if (intent.q) parts.push(`Search: “${intent.q}”`);
+  for (const key of ['service', 'status', 'severity']) if (intent[key].length) parts.push(`${human(key)}: ${intent[key].map(human).join(', ')}`);
+  if (intent.from || intent.to) parts.push(`Opened UTC: ${intent.from || 'any start'} through ${intent.to || 'any end'} (inclusive)`);
+  return parts.join(' · ') || 'All incidents · no search or filters';
+}
+let renderedOverview;
+function renderOverview() {
+  const current = isOverviewCurrent(state), op = state.overviewOp;
+  $('overview').setAttribute('aria-busy', String(op.pending));
+  $('overview').dataset.stale = String(!current);
+  // Hide old measures when filters change: displayed cards always belong to this selection.
+  $('overview-selection').textContent = `Selection: ${selectionText(state.intent)}`;
+  operationMessage($('overview-message'), op.error ? `Overview unavailable for this selection: ${op.error}` : op.pending ? 'Loading service measures for this selection…' : current && !state.overview.data.total ? 'No services match these selections. Clear a filter or change your search to compare services.' : '', op.error ? loadOverview : null, !!op.error);
+  const snapshot = current ? state.overview : null;
+  if (renderedOverview === snapshot) return;
+  renderedOverview = snapshot;
+  $('service-cards').replaceChildren();
+  for (const item of snapshot?.data.services || []) {
+    const card = node('article', undefined, 'service-card'); card.append(node('h3', item.service));
+    const measures = node('dl');
+    for (const [label, value] of [['Incidents', item.incidentCount], ['Unresolved', item.unresolvedCount], ['Critical + high', item.highSeverityCount], ['Average resolution', item.averageResolutionHours === null ? 'Unavailable' : `${item.averageResolutionHours.toFixed(1)} hours`]]) measures.append(node('dt', label), node('dd', String(value)));
+    card.append(measures); $('service-cards').append(card);
+  }
+}
+function persistTriage() {
+  try { localStorage.setItem(triageKey, JSON.stringify(triage)); $('triage-storage').textContent = 'Personal triage saved in this browser.'; }
+  catch { $('triage-storage').textContent = 'Browser storage is unavailable. Your triage and notes remain usable for this visit, but may not survive a reload.'; }
+}
+function renderTriage() {
+  $('triage-list').replaceChildren();
+  if (!triage.length) $('triage-list').append(node('li', 'No incidents in personal triage. Open full incident details and choose Add to personal triage.', 'muted'));
+  for (const entry of triage) {
+    const row = node('li'), open = node('button', `${entry.id} · ${entry.title}`, 'secondary'); open.type = 'button'; open.dataset.incident = entry.id;
+    open.setAttribute('aria-label', `Open triage incident ${entry.id}`);
+    open.addEventListener('click', () => { returnIncident = null; returnElement = open; dispatch({type: 'detail:select', id: entry.id}); loadDetail(); });
+    const label = node('label', `Note for ${entry.id}`), note = node('textarea'); note.id = `note-${entry.id}`; label.htmlFor = note.id; note.maxLength = 1000; note.rows = 3; note.value = entry.note;
+    note.addEventListener('input', () => { triage = editNote(triage, entry.id, note.value); persistTriage(); });
+    const remove = node('button', 'Remove from triage', 'secondary'); remove.type = 'button'; remove.setAttribute('aria-label', `Remove ${entry.id} from triage`);
+    remove.addEventListener('click', () => { triage = removeTriage(triage, entry.id); persistTriage(); renderTriage(); $('triage').focus(); });
+    row.append(open, node('p', `${entry.service} · ${human(entry.status)} · ${entry.severity}`), label, note, node('p', 'Plain text · up to 1,000 characters', 'muted'), remove); $('triage-list').append(row);
+  }
 }
 function renderViews() {
   $('views').replaceChildren();
@@ -221,4 +292,4 @@ $('detail').addEventListener('cancel', event => { event.preventDefault(); closeD
 $('save-form').addEventListener('submit', event => { event.preventDefault(); const name = $('view-name').value.trim(); if (!name) { $('view-name').setCustomValidity('Enter a view name.'); $('view-name').reportValidity(); return; } views.push({name, view: savedView(state.intent)}); persistViews(); renderViews(); $('view-name').value = ''; });
 $('view-name').addEventListener('input', () => $('view-name').setCustomValidity(''));
 window.addEventListener('popstate', () => change({type: 'address', intent: addressIntent(new URLSearchParams(location.search))}));
-renderViews(); render(); loadResults();
+renderViews(); renderTriage(); render(); loadResults(); loadOverview();
