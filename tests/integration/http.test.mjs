@@ -168,3 +168,88 @@ test('integration: exact npm run start serves the app and the owned process grou
     }
   }
 });
+
+test('integration: operational overview uses canonical full filtered data over real HTTP', async t => {
+  const server = await createAppServer();
+  try {
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const overview = async (options = {}) => {
+      const response = await fetch(`${base}/api/overview?${parameters(options)}`);
+      assert.equal(response.status, 200);
+      const actual = await response.json();
+      const matches = expected(options).items;
+      assert.equal(actual.total, matches.length);
+      const services = [...new Set(matches.map(row => row.service))].map(service => {
+        const incidents = matches.filter(row => row.service === service);
+        const resolved = incidents.filter(row => row.status === 'resolved');
+        const elapsedMilliseconds = resolved.reduce((sum, row) => sum + Date.parse(row.resolvedAt) - Date.parse(row.openedAt), 0);
+        return {
+          service, incidentCount: incidents.length,
+          unresolvedCount: incidents.filter(row => row.status === 'open' || row.status === 'in_progress').length,
+          highSeverityCount: incidents.filter(row => row.severity === 'critical' || row.severity === 'high').length,
+          averageResolutionHours: resolved.length ? elapsedMilliseconds / resolved.length / 3_600_000 : null,
+        };
+      }).sort((a, b) => b.unresolvedCount - a.unresolvedCount || a.service.localeCompare(b.service));
+      assert.equal(actual.services.length, services.length);
+      for (let i = 0; i < services.length; i++) {
+        const { averageResolutionHours, ...counts } = actual.services[i];
+        const { averageResolutionHours: expectedAverage, ...expectedCounts } = services[i];
+        assert.deepEqual(counts, expectedCounts);
+        if (expectedAverage === null) assert.equal(averageResolutionHours, null);
+        else assert.ok(Math.abs(averageResolutionHours - expectedAverage) < 1e-10,
+          `${counts.service} average ${averageResolutionHours} differs from canonical ${expectedAverage}`);
+      }
+      return actual;
+    };
+    await t.test('all services and filtered multipage result ignore page, size and sorting', async () => {
+      await overview();
+      const options = { q: 'incident', service: ['Accounts', 'Billing'], severity: ['critical', 'high'], from: '2026-04-01', to: '2026-06-29' };
+      const first = await overview({ ...options, page: 1, pageSize: 25 });
+      assert.ok(first.total > 50, 'selected fixture must span multiple pages');
+      assert.deepEqual(await overview({ ...options, page: 2, pageSize: 25 }), first);
+      assert.deepEqual(await overview({ ...options, page: 3, pageSize: 50 }), first);
+      const otherSort = await overview({ ...options, sort: 'severity', direction: 'asc' });
+      for (let i = 0; i < first.services.length; i++) {
+        assert.ok(Math.abs(first.services[i].averageResolutionHours - otherSort.services[i].averageResolutionHours) < 1e-10);
+        assert.deepEqual({ ...otherSort.services[i], averageResolutionHours: first.services[i].averageResolutionHours }, first.services[i]);
+      }
+    });
+    await t.test('resolved-only means exclude unresolved durations; missing averages are null', async () => {
+      const all = await overview();
+      const resolved = await overview({ status: ['resolved'] });
+      for (const service of resolved.services) {
+        assert.equal(service.unresolvedCount, 0);
+        assert.equal(service.averageResolutionHours, all.services.find(row => row.service === service.service).averageResolutionHours);
+      }
+      const unresolved = await overview({ status: ['open', 'in_progress'] });
+      assert.ok(unresolved.services.length > 0);
+      assert.ok(unresolved.services.every(service => service.averageResolutionHours === null));
+      const one = rows.find(row => row.status === 'open');
+      const isolated = await overview({ q: one.id });
+      assert.equal(isolated.services.length, 1);
+      assert.equal(isolated.services[0].averageResolutionHours, null);
+    });
+    await t.test('unresolved descending order, service-name ties, inclusive dates and empty state contract', async () => {
+      const all = await overview();
+      for (let i = 1; i < all.services.length; i++) assert.ok(all.services[i - 1].unresolvedCount >= all.services[i].unresolvedCount);
+      const tied = await overview({ status: ['resolved'] });
+      assert.deepEqual(tied.services.map(row => row.service), tied.services.map(row => row.service).sort());
+      for (const day of ['2026-04-01', '2026-06-29']) {
+        assert.ok((await overview({ from: day, to: day })).total > 0);
+      }
+      await overview({ q: 'SECOND line: <SAMPLE>', service: ['Accounts', 'Billing'], status: ['open', 'resolved'] });
+      assert.deepEqual(await overview({ q: 'no incident matches this' }), { total: 0, services: [] });
+    });
+    await t.test('overview retains incident query validation', async () => {
+      for (const query of ['page=0', 'pageSize=10', 'from=2026-02-30', 'service=Unknown', 'q=a&q=b', 'unknown=1', 'from=2026-06-01&to=2026-05-01']) {
+        const response = await fetch(`${base}/api/overview?${query}`);
+        assert.equal(response.status, 400);
+        assert.equal((await response.json()).error.code, 'INVALID_QUERY');
+      }
+    });
+  } finally {
+    await close(server);
+  }
+});

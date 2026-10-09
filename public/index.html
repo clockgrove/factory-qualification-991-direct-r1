@@ -10,6 +10,7 @@
 <body>
   <a class="skip-link" href="#results">Skip to incidents</a>
   <header class="masthead"><div><p class="eyebrow">Support intelligence · Fictional dataset</p><h1>Incident explorer</h1><p>Find the pattern. Understand the incident.</p></div><button id="export" type="button">Download CSV</button></header>
+  <nav class="workspace-nav" aria-label="Workspace"><a href="#overview">Operational overview</a><a href="#results">Incidents</a><a href="#triage">Personal triage</a><a href="#query-form">Search and filters</a></nav>
   <main>
     <aside aria-label="Explorer controls">
       <form id="query-form">
@@ -24,8 +25,14 @@
       </form>
       <section class="saved" aria-labelledby="saved-title"><h2 id="saved-title">Saved views</h2><form id="save-form"><label for="view-name">Name this view</label><input id="view-name" maxlength="80" required placeholder="e.g. Billing follow-up"><button type="submit" class="secondary">Save current view</button></form><p id="storage-message" role="status"></p><ul id="views"></ul></section>
     </aside>
+    <div class="workspace">
+    <section id="overview" tabindex="-1" aria-labelledby="overview-title">
+      <p class="eyebrow">Attention across services</p><h2 id="overview-title">Operational overview</h2>
+      <p class="muted">All incidents matching your search and filters, across every page. Unresolved means open or in progress. Critical + high counts both severity levels, including resolved incidents. Average resolution is hours from opening to resolution, for resolved incidents only; unavailable means none have resolved.</p>
+      <p id="overview-selection"></p><div id="overview-message" class="operation-message" role="status"></div><div id="service-cards"></div>
+    </section>
     <section id="results" tabindex="-1" aria-labelledby="result-title">
-      <div class="section-heading"><div><p class="eyebrow">All matching incidents</p><h2 id="result-title">Results overview</h2></div><span id="freshness" class="muted"></span></div>
+      <div class="section-heading"><div><p class="eyebrow">All matching incidents</p><h2 id="result-title">Incidents</h2></div><span id="freshness" class="muted"></span></div>
       <div id="active-filters" class="chips" aria-label="Active selections"></div>
       <div id="summary" class="summary"></div>
       <section class="chart" aria-labelledby="chart-title"><h3 id="chart-title">Opened by day · UTC</h3><p class="muted">Counts cover the entire matching result.</p><div id="chart-bars" aria-hidden="true"></div><details><summary>Read daily counts</summary><p id="chart-text"></p></details></section>
@@ -35,6 +42,8 @@
       <nav class="pagination" aria-label="Result pages"><button id="previous" class="secondary" type="button">Previous</button><span id="page-label"></span><button id="next" class="secondary" type="button">Next</button></nav>
       <div id="export-message" class="operation-message"></div>
     </section>
+    <section id="triage" tabindex="-1" aria-labelledby="triage-title"><p class="eyebrow">Your investigation workspace</p><h2 id="triage-title">Personal triage</h2><p class="muted">Add incidents from full details. Notes stay in this browser, in added order, separately from saved views and shared addresses.</p><p id="triage-storage" role="status"></p><ol id="triage-list"></ol></section>
+    </div>
   </main>
   <dialog id="detail" aria-labelledby="detail-title"><div class="detail-heading"><h2 id="detail-title">Incident details</h2><button id="close-detail" class="secondary" type="button">Close details</button></div><div id="detail-content"></div></dialog>
   <p id="announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
